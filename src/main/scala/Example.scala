@@ -59,6 +59,18 @@ object Example extends IOApp {
     }
   }
 
+  def method: IO[String] = {
+    IO{
+      //generate error randomly
+      val next = Math.random()
+      if(next>0.5) throw new RuntimeException
+      "result"
+    }
+  }
+
+  def program(breaker: CircuitBreaker[String]):IO[Unit] = for{
+    _ <- List.range(1, 50).traverse(id => breaker.run).start
+  } yield ()
 
   override def run(args: List[String]): IO[ExitCode] = ???
 }
