@@ -1,12 +1,11 @@
 import cats.effect.concurrent.Ref
 import cats.effect.{ExitCode, IO, IOApp}
 import cats.implicits._
-
 import scala.util.{Failure, Success, Try}
 
 //GOAL : prevent overloading of an underlying service if it fails beyond a threshold
 
-object Example extends IOApp {
+object CircuitBreakerRef extends IOApp {
 
   case class WindowConfig(runCount: Int, errorCount: Int) {
 
