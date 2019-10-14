@@ -4,7 +4,7 @@ import cats.implicits._
 
 import scala.util.{Failure, Success, Try}
 
-//GOAL : count how many times a particular method was called and prevent system overload by stopping errors after certain threshold
+//GOAL : prevent overloading of an underlying service if it fails beyond a threshold
 
 object Example extends IOApp {
 
@@ -47,8 +47,9 @@ object Example extends IOApp {
           (a: A) =>
             circuit.modify {
             case CircuitState(true, _) =>
-              (CircuitState(true, WindowConfig.newWindow), IO(println("circuit open")) >> IO.raiseError[B](CircuitOpenException("circuit breaker error")))
-            case CircuitState(false, windowConfig) => Try(f(a)) match {
+              //reset to old state
+              (CircuitState(false, WindowConfig.newWindow), IO(println("circuit open")) >> IO.raiseError[B](CircuitOpenException("circuit breaker error")))
+            case CircuitState(false, windowConfig) =>   Try(f(a)) match {
               case Success(value) => (CircuitState(windowConfig.addRun.isCircuitOpen(threshold, sampleSize), windowConfig.addRun), IO.pure(value))
               case Failure(exception) => (CircuitState(windowConfig.addError.isCircuitOpen(threshold, sampleSize), windowConfig.addError), IO.raiseError[B](exception))
             }
@@ -56,21 +57,21 @@ object Example extends IOApp {
     }
   }
 
-  def method(int: Int): String = {
-      //generate error randomly
-      val next = Math.random()
-      if(next>0) throw new RuntimeException("error in method")
+  // a random service that could fail
+  def method(id: Int): String = {
+    println("running method")
 
-      println("running method")
-      int.toString
+    if(id>=0) throw new RuntimeException("error in method")
+
+    id.toString
   }
 
   def program(breaker: CircuitBreaker[Int, String]) = for {
-    result <- List.range(1, 50).traverse(id => breaker.run(id).handleErrorWith(ex => IO(ex.getMessage)))
+    result <- List.range(0, 12).traverse(id => breaker.run(id).handleErrorWith(ex => IO(ex.getMessage)))
   } yield result
 
   override def run(args: List[String]): IO[ExitCode] = for {
-    breaker <- CircuitBreaker.create(50, 25)(method)
+    breaker <- CircuitBreaker.create(50, 5)(method) //after collecting 5 samples; if they error % is >= 50% then circuit breaker is open
     result <- program(breaker)
     res <- IO(println(result)).map(_ => ExitCode.Success)
   } yield res
