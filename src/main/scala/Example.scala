@@ -14,7 +14,13 @@ object Example extends IOApp {
 
     def addRun: WindowConfig = WindowConfig(runCount+1, errorCount)
 
-    def errorRate : Double = errorCount.toDouble/runCount.toDouble
+    def errorRate : Double = (errorCount.toDouble/runCount.toDouble)*100
+
+    def isCircuitOpen(threshold: Double, sampleSize: Int): Boolean = {
+      if(runCount>= sampleSize && errorRate>=threshold) true
+      else false
+    }
+
   }
 
   object WindowConfig {
@@ -25,52 +31,47 @@ object Example extends IOApp {
 
     def resetWindow : CircuitState = CircuitState(false, WindowConfig.newWindow)
 
-    def isCircuitOpen(threshold: Double, sampleSize: Int): Boolean = {
-      if(windowConfig.runCount>= sampleSize && windowConfig.errorRate>threshold) true
-      else false
-    }
-
   }
 
   case class CircuitOpenException(msg: String) extends Throwable(msg)
 
-  trait CircuitBreaker[A] {
-    def run: IO[A]
+  trait CircuitBreaker[A,B] {
+    def run(a: A): IO[B]
   }
 
   object CircuitBreaker {
-    def create[A](threshold: Double, sampleSize: Int)(body: => A) : IO[CircuitBreaker[A]] =
+    def create[A,B](threshold: Double, sampleSize: Int)(f: A => B) : IO[CircuitBreaker[A,B]] =
       Ref[IO].of(CircuitState(false, WindowConfig.newWindow)).map {
         circuit =>
 
-          new CircuitBreaker[A] {
-            override def run: IO[A] = circuit.get.flatMap {
-              state =>
-                state.open match {
-                  case true => circuit.modify(s => (s.resetWindow, ())) >> IO.raiseError(CircuitOpenException(s"circuit-breaker open"))
-                  case _ =>
-                    Try(body) match {
-                      case Success(value) => circuit.modify(s => (s.copy(windowConfig = s.windowConfig.addRun), value))
-                      case Failure(exception) =>   circuit.modify(s => (s.copy(windowConfig = s.windowConfig.addRun), ())) >> IO.raiseError[A](exception)
-                    }
-                }
+          (a: A) =>
+            circuit.modify {
+            case CircuitState(true, _) =>
+              (CircuitState(true, WindowConfig.newWindow), IO(println("circuit open")) >> IO.raiseError[B](CircuitOpenException("circuit breaker error")))
+            case CircuitState(false, windowConfig) => Try(f(a)) match {
+              case Success(value) => (CircuitState(windowConfig.addRun.isCircuitOpen(threshold, sampleSize), windowConfig.addRun), IO.pure(value))
+              case Failure(exception) => (CircuitState(windowConfig.addError.isCircuitOpen(threshold, sampleSize), windowConfig.addError), IO.raiseError[B](exception))
             }
-          }
+          }.flatten
     }
   }
 
-  def method: IO[String] = {
-    IO{
+  def method(int: Int): String = {
       //generate error randomly
       val next = Math.random()
-      if(next>0.5) throw new RuntimeException
-      "result"
-    }
+      if(next>0) throw new RuntimeException("error in method")
+
+      println("running method")
+      int.toString
   }
 
-  def program(breaker: CircuitBreaker[String]):IO[Unit] = for{
-    _ <- List.range(1, 50).traverse(id => breaker.run).start
-  } yield ()
+  def program(breaker: CircuitBreaker[Int, String]) = for {
+    result <- List.range(1, 50).traverse(id => breaker.run(id).handleErrorWith(ex => IO(ex.getMessage)))
+  } yield result
 
-  override def run(args: List[String]): IO[ExitCode] = ???
+  override def run(args: List[String]): IO[ExitCode] = for {
+    breaker <- CircuitBreaker.create(50, 25)(method)
+    result <- program(breaker)
+    res <- IO(println(result)).map(_ => ExitCode.Success)
+  } yield res
 }
